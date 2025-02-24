@@ -61,8 +61,11 @@ unsigned long long getSafeTypeSize(ASTContext &context, QualType qt) {
         return context.getTargetInfo().getPointerWidth(LangAS::Default) / 8;
     }
     if (globalSeenTypes.find(rawType) != globalSeenTypes.end()) {
+        std::cout << "CYCLIC_TYPE_DETECTED: " << qt.getAsString() << std::endl;
         llvm::errs() << "[WARNING] Skipping cyclic type: " << qt.getAsString() << "\n";
-        return 0;  // Avoid infinite recursion
+        //return 0;  // Avoid infinite recursion
+        // Return pointer size instead of 0 for cyclic types
+        return context.getTargetInfo().getPointerWidth(LangAS::Default) / 8;
     }
 
     globalSeenTypes.insert(rawType);
