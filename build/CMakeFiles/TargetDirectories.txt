@@ -1,0 +1,8 @@
+/mnt/linuxstorage/vlsi-open-source-tool/src_analyzer/build/CMakeFiles/intrinsics_gen.dir
+/mnt/linuxstorage/vlsi-open-source-tool/src_analyzer/build/CMakeFiles/omp_gen.dir
+/mnt/linuxstorage/vlsi-open-source-tool/src_analyzer/build/CMakeFiles/acc_gen.dir
+/mnt/linuxstorage/vlsi-open-source-tool/src_analyzer/build/CMakeFiles/RISCVTargetParserTableGen.dir
+/mnt/linuxstorage/vlsi-open-source-tool/src_analyzer/build/CMakeFiles/clang-tablegen-targets.dir
+/mnt/linuxstorage/vlsi-open-source-tool/src_analyzer/build/CMakeFiles/MyStaticAnalyzer.dir
+/mnt/linuxstorage/vlsi-open-source-tool/src_analyzer/build/CMakeFiles/edit_cache.dir
+/mnt/linuxstorage/vlsi-open-source-tool/src_analyzer/build/CMakeFiles/rebuild_cache.dir

@@ -1,0 +1,7 @@
+[
+{
+  "directory": "/mnt/linuxstorage/vlsi-open-source-tool/src_analyzer/build",
+  "command": "/usr/bin/clang++-17  -I/usr/lib/llvm-17/include -I/usr/include/nlohmann  -fsanitize=address -g -O1   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -std=gnu++17 -o CMakeFiles/MyStaticAnalyzer.dir/feature_extraction.cpp.o -c /mnt/linuxstorage/vlsi-open-source-tool/src_analyzer/feature_extraction.cpp",
+  "file": "/mnt/linuxstorage/vlsi-open-source-tool/src_analyzer/feature_extraction.cpp"
+}
+]
