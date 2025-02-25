@@ -6,6 +6,7 @@
 #include <experimental/filesystem> // For Clang 10/17 compatibility
 #include <nlohmann/json.hpp>
 #include <unordered_set>
+#include <mutex>
 
 #include <clang/AST/AST.h>
 #include <clang/AST/RecursiveASTVisitor.h>
@@ -38,44 +39,68 @@ const std::string OUTPUT_FOLDER = "/mnt/linuxstorage/vlsi-open-source-tool/outpu
 // Global set to track visited types and avoid infinite recursion in getSafeTypeSize.
 static std::unordered_set<const Type*> globalSeenTypes;
 static thread_local unsigned RecursionDepth = 0;
-static const unsigned MAX_RECURSION_DEPTH = 64;
+static const unsigned MAX_RECURSION_DEPTH = 16;  // Reduced to 16 for stack safety
+
+// Add mutex for globalSeenTypes
+static std::mutex gTypeMutex;
 
 unsigned long long getSafeTypeSize(ASTContext &context, QualType qt) {
-    if (qt.isNull())
+    // Immediate depth check before any processing
+    if (RecursionDepth > MAX_RECURSION_DEPTH) {
+        llvm::errs() << "[CRITICAL] Aborting deep recursion at depth " 
+                    << RecursionDepth << " for type: "
+                    << qt.getAsString() << "\n";
+        return context.getTargetInfo().getPointerWidth(LangAS::Default) / 8;
+    }
+    ++RecursionDepth;
+
+    if (qt.isNull()) {
+        --RecursionDepth;
         return 0;
+    }
 
     QualType canonicalQT = qt.getCanonicalType();
     const Type *rawType = canonicalQT.getTypePtrOrNull();
-    if (!rawType)
+    if (!rawType) {
+        --RecursionDepth;
         return 0;
-
-    llvm::errs() << "[DEBUG] Analyzing type: " << qt.getAsString() << "\n";
-
-    if (RecursionDepth > MAX_RECURSION_DEPTH - 5) {
-        llvm::errs() << "[WARNING] Recursion depth approaching limit for type: " 
-                     << qt.getAsString() << " (Depth: " << RecursionDepth << ")\n";
-    }
-    if (RecursionDepth > MAX_RECURSION_DEPTH) {
-        llvm::errs() << "[ERROR] Skipping type due to excessive recursion: " 
-                     << qt.getAsString() << "\n";
-        return context.getTargetInfo().getPointerWidth(LangAS::Default) / 8;
-    }
-    if (globalSeenTypes.find(rawType) != globalSeenTypes.end()) {
-        std::cout << "CYCLIC_TYPE_DETECTED: " << qt.getAsString() << std::endl;
-        llvm::errs() << "[WARNING] Skipping cyclic type: " << qt.getAsString() << "\n";
-        //return 0;  // Avoid infinite recursion
-        // Return pointer size instead of 0 for cyclic types
-        return context.getTargetInfo().getPointerWidth(LangAS::Default) / 8;
     }
 
-    globalSeenTypes.insert(rawType);
-    ++RecursionDepth;
+    // Enhanced cycle detection with thread-safe access
+    {
+        std::lock_guard<std::mutex> lock(gTypeMutex);
+        if (globalSeenTypes.count(rawType)) {
+            llvm::errs() << "[WARNING] Cyclic type detected at depth "
+                        << RecursionDepth << ": " 
+                        << qt.getAsString() << "\n";
+            --RecursionDepth;
+            return context.getTargetInfo().getPointerWidth(LangAS::Default) / 8;
+        }
+        globalSeenTypes.insert(rawType);
+    }
 
-    unsigned size = context.getTypeSize(qt) / 8;
+    unsigned size = 0;
+    try {
+        // Validate type before size calculation
+        if (canonicalQT->isSizelessType()) {
+            llvm::errs() << "[WARNING] Unsized type: " 
+                        << qt.getAsString() << "\n";
+            throw std::runtime_error("Unsized type");
+        }
+        
+        size = context.getTypeSize(qt) / 8;
+    } catch (const std::exception& e) {
+        llvm::errs() << "[ERROR] Size calculation failed for "
+                    << qt.getAsString() << ": " << e.what() << "\n";
+    }
 
+    // Cleanup type tracking
+    {
+        std::lock_guard<std::mutex> lock(gTypeMutex);
+        globalSeenTypes.erase(rawType);
+    }
+    
     --RecursionDepth;
-    globalSeenTypes.erase(rawType);
-
     return size;
 }
 
@@ -84,14 +109,32 @@ public:
     std::unordered_map<std::string, int> typeCount;
     unsigned long long stackSize = 0;
     int totalLocalCount = 0;
+    ASTContext *Context;  // Add context reference
 
     bool VisitVarDecl(const VarDecl *v) {
         if (v->isLocalVarDecl() && !v->hasGlobalStorage()) {
-            std::string typeName = v->getType().getAsString();
-            typeCount[typeName]++;
-            unsigned typeSize = v->getASTContext().getTypeSize(v->getType()) / 8;
-            stackSize += typeSize;
-            totalLocalCount++;
+            QualType varType = v->getType().getCanonicalType();
+            
+            // Apply the same safety checks as parameters
+            if (varType.isNull() ||
+                varType->isSizelessType() ||
+                varType->isDependentType() ||
+                varType->isIncompleteType()) {
+                llvm::errs() << "[SKIPPED] Unanalyzable local variable type: " 
+                            << varType.getAsString() << "\n";
+                return true;
+            }
+
+            try {
+                std::string typeName = varType.getAsString();
+                typeCount[typeName]++;
+                unsigned typeSize = getSafeTypeSize(*Context, varType);
+                stackSize += typeSize;
+                totalLocalCount++;
+            } catch (const std::exception& e) {
+                llvm::errs() << "[ERROR] Local variable analysis failed: " 
+                            << e.what() << "\n";
+            }
         }
         return true;
     }
@@ -103,28 +146,41 @@ public:
 
     void run(const MatchFinder::MatchResult &Result) override {
         if (const FunctionDecl *FD = Result.Nodes.getNodeAs<FunctionDecl>("functionDecl")) {
-            // Only process functions from the main file.
             if (!FD->getLocation().isInvalid() && Result.SourceManager->isInMainFile(FD->getLocation())) {
+                ASTContext &Context = *Result.Context; // Get context from match result
+                
                 json functionJson;
                 functionJson["function_name"] = FD->getNameAsString();
                 functionJson["number_of_parameters"] = FD->getNumParams();
 
                 unsigned long long paramStackSize = 0;
                 for (const auto *param : FD->parameters()) {
-                    if (!param)
-                        continue;
-                    QualType paramType = param->getType();
-                    if (paramType.isNull())
-                        continue;
+                    if (!param) continue;
+                    QualType paramType = param->getType().getCanonicalType();
+                    
+                    // Comprehensive pre-checks
+                    if (paramType.isNull() ||
+                        paramType->isSizelessType() ||  // Critical check
+                        paramType->isDependentType() ||
+                        paramType->isIncompleteType()) {
+                        llvm::errs() << "[SKIPPED] Unanalyzable parameter type: "
+                                    << paramType.getAsString() << "\n";
 
-                    // Compute and accumulate parameter sizes.
-                    if (param->getASTContext().getTypeInfo(paramType).Width > 0) {
-                        paramStackSize += getSafeTypeSize(param->getASTContext(), paramType);
+                        continue;
+                    }
+
+                    try {
+                        paramStackSize += getSafeTypeSize(Context, paramType);
+                    } catch (const std::exception& e) {
+                        llvm::errs() << "[FATAL] Aborted type analysis: "
+                                    << e.what() << "\n";
+                        break;  // Prevent further processing
                     }
                 }
                 functionJson["total_parameter_stack_size_bytes"] = paramStackSize;
 
                 LocalVariableCounter LVC;
+                LVC.Context = &Context;  // Set the context before traversal
                 LVC.TraverseDecl(const_cast<FunctionDecl*>(FD));
                 functionJson["total_local_variable_stack_size_bytes"] = LVC.stackSize;
                 functionJson["total_local_variables"] = LVC.totalLocalCount;
