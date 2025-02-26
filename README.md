@@ -72,3 +72,18 @@ Now, you can run the source analyzer by:
 
 
 
+# Function address extractor
+This tool can be used to extract the function addresses from unstripped elf.
+
+## Prerequisites
+```sh
+sudo apt-get install python3-pip
+pip3 install elftools
+```
+
+Run the parser by:
+```sh
+python3 dwarf_parser.py
+```
+
+
